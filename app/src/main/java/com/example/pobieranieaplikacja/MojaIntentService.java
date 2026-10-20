@@ -10,41 +10,38 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Environment;
+
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
-
-import javax.net.ssl.HttpsURLConnection;
 
 public class MojaIntentService extends IntentService {
     private static final String AKCJA_ZADANIE1 = "com.example.intent_service.action.zadanie1";
     private static final String PARAMETR1 = "com.example.intent_service.extra.parametr1";
     private static final int ID_POWIADOMIENIA = 1;
-    private NotificationManager mManagerPowiadomien;
     private static final String ID_KANALU = "kanal_powiadomien";
+
+    private NotificationManager mManagerPowiadomien;
     private int mRozmiar;
     private int mPobranychBajtow = 0;
     private String mAdres;
     private String mTyp;
-
     private boolean isButtonDisabled;
-
-
 
     public static final String POWIADOMIENIE = "com.example.intent_service.odbiornik";
     public static final String INFO = "info";
 
-    public static void uruchomUsluge(Context context, String adres,boolean buttonDisabled) {
+    public static void uruchomUsluge(Context context, String adres, boolean buttonDisabled) {
         Intent zamiar = new Intent(context, MojaIntentService.class);
-        //urucjomienie uslugi MojaIntentservice z odpowiedniki parametrami.
         zamiar.setAction(AKCJA_ZADANIE1);
-        zamiar.putExtra(PARAMETR1, adres); //przechowywanie adresu pobierania
+        zamiar.putExtra(PARAMETR1, adres);
         zamiar.putExtra("buttonDisabled", buttonDisabled);
-        context.startService(zamiar); //uruchomienie uslugi z argumentem zamiar
+        context.startService(zamiar);
     }
 
     public MojaIntentService() {
@@ -54,127 +51,145 @@ public class MojaIntentService extends IntentService {
     @Override
     protected void onHandleIntent(Intent intent) {
         mManagerPowiadomien = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        //tworzenie kanalu powiadomien
         przygotujKanalPowiadomien();
-        //miała wyższy priorytet i nie będzie łatwo zakończona przez system.
         startForeground(ID_POWIADOMIENIA, utworzPowiadomienie());
 
         if (intent != null) {
             final String action = intent.getAction();
             if (AKCJA_ZADANIE1.equals(action)) {
-                //jesli akcja jest rowna naszemu zadaniu
-                //pobieramy adres, stan przycisku i pobieramy plik
                 mAdres = intent.getStringExtra(PARAMETR1);
                 isButtonDisabled = intent.getBooleanExtra("buttonDisabled", false);
                 pobierzPlik(mAdres);
             }
         }
-
     }
 
     private void pobierzPlik(String adres) {
-        HttpsURLConnection polaczenie = null;
-        InputStream strumienZSieci = null; //strumien wejscia
-        FileOutputStream strumienDoPliku = null; //strumien wyjscia
+        HttpURLConnection polaczenie = null;
+        InputStream strumienZSieci = null;
+        FileOutputStream strumienDoPliku = null;
+
         try {
             URL url = new URL(adres);
-            File plikRoboczy = new File(url.getFile()); // na podstawie nazwy url
-            File plikWyjsciowy = new File(Environment.getExternalStorageDirectory() + File.separator + plikRoboczy.getName());
+            String sciezkaUrl = url.getPath();
+            String nazwaPliku = sciezkaUrl.substring(sciezkaUrl.lastIndexOf('/') + 1);
+            if (nazwaPliku.isEmpty()) {
+                nazwaPliku = "pobrany_plik_" + System.currentTimeMillis();
+            }
+
+            File katalogPobierania = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if (katalogPobierania == null) {
+                katalogPobierania = getFilesDir();
+            }
+            File plikWyjsciowy = new File(katalogPobierania, nazwaPliku);
+
             if (plikWyjsciowy.exists()) {
                 plikWyjsciowy.delete();
             }
-            polaczenie = (HttpsURLConnection) url.openConnection(); //nawiazanie polaczenia
-            polaczenie.setRequestMethod("GET");
-            mRozmiar = polaczenie.getContentLength(); //rozmiar pliku
-            mTyp = polaczenie.getContentType(); // typ pliku
-            strumienZSieci = polaczenie.getInputStream(); //Strumień wejściowy do odczytu danych z połączenia.
-            strumienDoPliku = new FileOutputStream(plikWyjsciowy.getPath()); //Strumień wyjściowy do zapisu danych do pliku.
 
-            byte bufor[] = new byte[8192]; // Zwiększ rozmiar bufora do 8192 bajtów
-            int pobrano = strumienZSieci.read(bufor, 0, 8192);
-            while (pobrano != -1) {
-                //gdy dane zostana odczytane, zostanie zwrocone -1, petla sie skonczy
+            polaczenie = (HttpURLConnection) url.openConnection();
+            polaczenie.setRequestMethod("GET");
+            polaczenie.setConnectTimeout(15000);
+            polaczenie.setReadTimeout(15000);
+
+            mRozmiar = polaczenie.getContentLength();
+            mTyp = polaczenie.getContentType();
+            strumienZSieci = polaczenie.getInputStream();
+            strumienDoPliku = new FileOutputStream(plikWyjsciowy);
+
+            byte[] bufor = new byte[8192];
+            int pobrano;
+
+            while ((pobrano = strumienZSieci.read(bufor)) != -1) {
                 strumienDoPliku.write(bufor, 0, pobrano);
                 mPobranychBajtow += pobrano;
-                pobrano = strumienZSieci.read(bufor, 0, 8192);
 
-
-                // Aktualizacja statusu i powiadomień za każdym razem
                 PostepInfo postepInfo = new PostepInfo();
                 postepInfo.mPobranychBajtow = mPobranychBajtow;
                 postepInfo.mRozmiar = mRozmiar;
                 postepInfo.mStatus = "Pobieranie trwa";
 
-                wyslijBroadcast(postepInfo); //przekazywane do mainactivity
-
-                // Aktualizacja powiadomienia o postępie
+                wyslijBroadcast(postepInfo);
                 mManagerPowiadomien.notify(ID_POWIADOMIENIA, utworzPowiadomienie());
             }
 
+            PostepInfo postepInfo = new PostepInfo();
+            postepInfo.mPobranychBajtow = mPobranychBajtow;
+            postepInfo.mRozmiar = mRozmiar;
+            postepInfo.mStatus = "Pobieranie zakończone";
+            wyslijBroadcast(postepInfo);
+
         } catch (Exception e) {
-            e.printStackTrace();
+            PostepInfo postepInfo = new PostepInfo();
+            postepInfo.mPobranychBajtow = 0;
+            postepInfo.mRozmiar = 0;
+            postepInfo.mStatus = "Błąd pobierania";
+            wyslijBroadcast(postepInfo);
         } finally {
             if (strumienZSieci != null) {
                 try {
                     strumienZSieci.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
+                } catch (IOException ignored) {}
             }
             if (strumienDoPliku != null) {
                 try {
                     strumienDoPliku.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
+                } catch (IOException ignored) {}
             }
             if (polaczenie != null) {
                 polaczenie.disconnect();
             }
         }
-
     }
 
     private void przygotujKanalPowiadomien() {
-        mManagerPowiadomien = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { //wersja Android 26
-            CharSequence name = getString(R.string.app_name); //mazwa powidomienia
-            NotificationChannel kanal = new NotificationChannel(ID_KANALU, name, NotificationManager.IMPORTANCE_LOW);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            CharSequence name = getString(R.string.app_name);
+            NotificationChannel kanal = new NotificationChannel(
+                    ID_KANALU,
+                    name,
+                    NotificationManager.IMPORTANCE_LOW
+            );
             mManagerPowiadomien.createNotificationChannel(kanal);
         }
     }
 
     private Notification utworzPowiadomienie() {
         Intent intencjaPowiadomienia = new Intent(this, MainActivity.class);
-
-        // Dodanie mRozmiar i mTyp do intencji powiadomienia
         intencjaPowiadomienia.putExtra("rozmiar", mRozmiar);
         intencjaPowiadomienia.putExtra("typ", mTyp);
         intencjaPowiadomienia.putExtra("buttonDisabled", isButtonDisabled);
 
-        TaskStackBuilder budowniczyStosu = TaskStackBuilder.create(this); // tworzenie stosu
-        budowniczyStosu.addParentStack(MainActivity.class); // mozliwosc powrotu do ekranow na stosie
+        TaskStackBuilder budowniczyStosu = TaskStackBuilder.create(this);
+        budowniczyStosu.addParentStack(MainActivity.class);
         budowniczyStosu.addNextIntent(intencjaPowiadomienia);
-        PendingIntent intencjaOczekujaca = budowniczyStosu.getPendingIntent(0, PendingIntent.FLAG_UPDATE_CURRENT);
+
+        int flagiPendingIntent = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            flagiPendingIntent |= PendingIntent.FLAG_IMMUTABLE;
+        }
+
+        PendingIntent intencjaOczekujaca = budowniczyStosu.getPendingIntent(0, flagiPendingIntent);
         Notification.Builder budowniczyPowiadomien = new Notification.Builder(this);
 
-        budowniczyPowiadomien.setContentTitle(getString(R.string.powiadomienie_tytul)) // konfigurowanie powiadomienia
-                .setProgress(mRozmiar, mPobranychBajtow, false)
+        budowniczyPowiadomien.setContentTitle(getString(R.string.powiadomienie_tytul))
+                .setProgress(mRozmiar > 0 ? mRozmiar : 0, mPobranychBajtow, mRozmiar <= 0)
                 .setContentIntent(intencjaOczekujaca)
                 .setSmallIcon(R.drawable.ic_launcher_background)
-                .setWhen(System.currentTimeMillis())
-                .setPriority(Notification.PRIORITY_HIGH);
+                .setWhen(System.currentTimeMillis());
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             budowniczyPowiadomien.setChannelId(ID_KANALU);
+        } else {
+            budowniczyPowiadomien.setPriority(Notification.PRIORITY_HIGH);
         }
+
         return budowniczyPowiadomien.build();
     }
 
     private void wyslijBroadcast(PostepInfo postepInfo) {
         Intent zamiar = new Intent(POWIADOMIENIE);
         zamiar.putExtra(INFO, postepInfo);
-        //bezpieczny sposob wysylania informacji z akcją POWIADOMIENIE
         LocalBroadcastManager.getInstance(this).sendBroadcast(zamiar);
     }
 }
