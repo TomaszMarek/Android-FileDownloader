@@ -9,7 +9,6 @@ import android.content.pm.PackageManager;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
-import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -22,9 +21,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
+import java.net.HttpURLConnection;
 import java.net.URL;
-
-import javax.net.ssl.HttpsURLConnection;
 
 public class MainActivity extends AppCompatActivity {
     private static final int WRITE_EXTERNAL_STORAGE_REQUEST_CODE = 1;
@@ -55,7 +53,6 @@ public class MainActivity extends AppCompatActivity {
         buttonDownload = findViewById(R.id.buttonPobierzPlik);
         buttonInformation = findViewById(R.id.buttonPobierzInformacje);
 
-
         if (savedInstanceState != null) {
             editTextUrl.setText(savedInstanceState.getString("editTextUrl"));
             textView5.setText(savedInstanceState.getString("textView5"));
@@ -64,49 +61,62 @@ public class MainActivity extends AppCompatActivity {
             textView9.setText(savedInstanceState.getString("textView9"));
             mRozmiar = savedInstanceState.getInt("mRozmiar", 0);
             mTyp = savedInstanceState.getString("mTyp");
-            //przywracanie stanu przycisku
             buttonDownload.setEnabled(savedInstanceState.getBoolean(BUTTON_ENABLED_KEY, true));
-
         } else {
             Intent intent = getIntent();
             if (intent != null) {
                 mRozmiar = intent.getIntExtra("rozmiar", 0);
                 mTyp = intent.getStringExtra("typ");
-                //pobranie stanu wartosci przycisku!
-                //wyłączony - false, włączony - true
                 boolean buttonDisabled = intent.getBooleanExtra("buttonDisabled", false);
                 buttonDownload.setEnabled(!buttonDisabled);
-
             }
         }
 
         textView5.setText(String.valueOf(mRozmiar));
         textView7.setText(mTyp);
 
-        buttonInformation.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                String url = editTextUrl.getText().toString();
-                ZadanieAsynchroniczne zadanie = new ZadanieAsynchroniczne(url);
-                zadanie.execute(10);
+        buttonInformation.setOnClickListener(v -> {
+            String url = editTextUrl.getText().toString().trim();
+            if (url.isEmpty()) {
+                Toast.makeText(MainActivity.this, "Wprowadź poprawny adres URL", Toast.LENGTH_SHORT).show();
+                return;
             }
+            ZadanieAsynchroniczne zadanie = new ZadanieAsynchroniczne(url);
+            zadanie.execute();
         });
-        buttonDownload.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // jesli ma przyznane uprawnienia
-                if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
-                    buttonDownload.setEnabled(false);
-                    String url = editTextUrl.getText().toString();
-                    MojaIntentService.uruchomUsluge(MainActivity.this, url, true);
-                } else {
-                    //żądanie uprawnien
-                    ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, WRITE_EXTERNAL_STORAGE_REQUEST_CODE);
-                }
+
+        buttonDownload.setOnClickListener(v -> checkPermissionAndDownload());
+
+        LocalBroadcastManager.getInstance(this).registerReceiver(
+                mOdbiorca,
+                new IntentFilter(MojaIntentService.POWIADOMIENIE)
+        );
+    }
+
+    private void checkPermissionAndDownload() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startDownloadService();
+        } else {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
+                startDownloadService();
+            } else {
+                ActivityCompat.requestPermissions(
+                        this,
+                        new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                        WRITE_EXTERNAL_STORAGE_REQUEST_CODE
+                );
             }
-        });
-        //tworzenie nasluchiwacza, informacje o pobieraniu i zakonczeniu
-        LocalBroadcastManager.getInstance(this).registerReceiver(mOdbiorca, new IntentFilter(MojaIntentService.POWIADOMIENIE));
+        }
+    }
+
+    private void startDownloadService() {
+        String url = editTextUrl.getText().toString().trim();
+        if (url.isEmpty()) {
+            Toast.makeText(this, "Wprowadź poprawny adres URL", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        buttonDownload.setEnabled(false);
+        MojaIntentService.uruchomUsluge(MainActivity.this, url, true);
     }
 
     @Override
@@ -134,86 +144,91 @@ public class MainActivity extends AppCompatActivity {
         mTyp = savedInstanceState.getString("mTyp");
         buttonDownload.setEnabled(savedInstanceState.getBoolean(BUTTON_ENABLED_KEY, true));
     }
-    //odbiorca rozgloszen
-    //oczekuje na odpowiedz od wyslijbroadcast
-    private BroadcastReceiver mOdbiorca = new BroadcastReceiver() {
+
+    private final BroadcastReceiver mOdbiorca = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent != null) {
-                //pobieranie postep info z intenjci
-                PostepInfo postepInfo = intent.getParcelableExtra(MojaIntentService.INFO); //
+                PostepInfo postepInfo = intent.getParcelableExtra(MojaIntentService.INFO);
                 if (postepInfo != null) {
-                    // Aktualizacja UI na podstawie postepInfo
                     textView9.setText(postepInfo.mPobranychBajtow + " / " + postepInfo.mRozmiar);
                     textView8.setText(postepInfo.mStatus);
-                    //setProgress oczekuje warrtosci procentowej
-                    progressBar.setProgress((int) ((postepInfo.mPobranychBajtow / (float) postepInfo.mRozmiar) * 100));
 
-                    // Sprawdzenie czy pobieranie zakończone
-                    if (postepInfo.mPobranychBajtow == postepInfo.mRozmiar) {
-                        textView8.setText("Pobieranie zakończone"); // Aktualizacja TextView
-                        findViewById(R.id.buttonPobierzPlik).setEnabled(true); // Odblokuj przycisk
+                    if (postepInfo.mRozmiar > 0) {
+                        int progress = (int) (((float) postepInfo.mPobranychBajtow / postepInfo.mRozmiar) * 100);
+                        progressBar.setProgress(progress);
+                    }
+
+                    if (postepInfo.mPobranychBajtow == postepInfo.mRozmiar && postepInfo.mRozmiar > 0) {
+                        textView8.setText("Pobieranie zakończone");
+                        buttonDownload.setEnabled(true);
+                    } else if ("Błąd pobierania".equals(postepInfo.mStatus)) {
+                        buttonDownload.setEnabled(true);
                     }
                 }
             }
         }
     };
-    //Przy pierwszym uruchomieniu
+
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == WRITE_EXTERNAL_STORAGE_REQUEST_CODE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-//                // Otrzymaliśmy uprawnienia, możemy uruchomić usługę pobierania pliku
-                buttonDownload.setEnabled(false);
-                String url = editTextUrl.getText().toString();
-                MojaIntentService.uruchomUsluge(MainActivity.this, url, true);
+                startDownloadService();
             } else {
-                // Nie otrzymaliśmy uprawnień
-                Toast.makeText(this, "Brak uprawnień do zapisu na zewnętrznym nośniku", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Brak uprawnień do zapisu danych", Toast.LENGTH_SHORT).show();
             }
         }
     }
 
-    // AsyncTask do pobierania informacji o pliku
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(mOdbiorca);
+    }
 
-//Pozwala na wykonywanie zadania w tle i aktualizowanie interfejsu uzytkownika
-    private class ZadanieAsynchroniczne extends AsyncTask<Integer, Integer, Integer> {
-        //dane przekazywane, dane do postepu i dane koncowe.
-        private int mRozmiar;
-        private String mTyp;
-        private String adresUrl;
+    private class ZadanieAsynchroniczne extends AsyncTask<Void, Void, Boolean> {
+        private final String adresUrl;
+        private int pobranyRozmiar;
+        private String pobranyTyp;
 
         public ZadanieAsynchroniczne(String adresUrl) {
             this.adresUrl = adresUrl;
         }
 
         @Override
-        protected Integer doInBackground(Integer... params) {
-            HttpsURLConnection polaczenie = null;
+        protected Boolean doInBackground(Void... voids) {
+            HttpURLConnection polaczenie = null;
             try {
-                URL url = new URL(adresUrl); //UTWORZENIE
-                polaczenie = (HttpsURLConnection) url.openConnection(); //OTWORZENIE
-                polaczenie.setRequestMethod("GET"); //WYBRANIE METODY
-                mRozmiar = polaczenie.getContentLength();
-                mTyp = polaczenie.getContentType();
-                //bez ponizszego nie aktualizuje
-                publishProgress(mRozmiar); // wysyłanie informacji o postępie
+                URL url = new URL(adresUrl);
+                polaczenie = (HttpURLConnection) url.openConnection();
+                polaczenie.setRequestMethod("GET");
+                polaczenie.setConnectTimeout(10000);
+                polaczenie.setReadTimeout(10000);
+
+                pobranyRozmiar = polaczenie.getContentLength();
+                pobranyTyp = polaczenie.getContentType();
+                return true;
             } catch (Exception e) {
-                e.printStackTrace();
+                return false;
             } finally {
-                if (polaczenie != null) polaczenie.disconnect();
+                if (polaczenie != null) {
+                    polaczenie.disconnect();
+                }
             }
-            return 42;
         }
+
         @Override
-        protected void onProgressUpdate(Integer... values) {
-            // Aktualizacja informacji o postępie POBIERZ INFORMACJE
-            textView5.setText(String.valueOf(mRozmiar));
-            textView7.setText(mTyp);
+        protected void onPostExecute(Boolean success) {
+            if (success) {
+                mRozmiar = pobranyRozmiar;
+                mTyp = pobranyTyp != null ? pobranyTyp : "Nieznany";
+                textView5.setText(String.valueOf(mRozmiar));
+                textView7.setText(mTyp);
+            } else {
+                Toast.makeText(MainActivity.this, "Nie udało się pobrać informacji o pliku", Toast.LENGTH_SHORT).show();
+            }
         }
-        }
-
     }
-
-
+}
